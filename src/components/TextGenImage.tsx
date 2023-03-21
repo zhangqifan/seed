@@ -1,148 +1,296 @@
-import React, { useState, useEffect } from "react";
+import ImageForm from "./ImageForm";
+import { useState, useEffect } from "react";
 import axios from "axios";
-import { saveAs } from "file-saver";
-import "tailwindcss/tailwind.css";
+import { ImageItem, Product } from "./ResultList";
+import { getFormattedDate } from "../utils/date";
+import { keyMapping, Payload } from "../utils/payload";
+import { changeCkpt, loadCkpts, loadOptions } from "../utils/ckpt";
 
-interface ApiResponse {
-	images: string[];
+interface TextGenImageProps {
+	onGeneratedProduct: (prod: Product) => void;
 }
 
-interface ProgressResponse {
-	progress: number;
-	eta_relative: number;
-	state: Record<string, unknown>;
-	current_image: string;
-	textinfo: string;
-}
+export default function TextGenImage(props: TextGenImageProps) {
+	// Form elements
+	const [ckpts, setCkpts] = useState<string[]>([]);
+	const [ckpt, setCkpt] = useState<string>("");
+	const [prompt, setPrompt] = useState<string>("");
+	const [nPrompt, setNPrompt] = useState<string>("");
+	const [method, setMethod] = useState<string>("Euler a");
+	const [steps, setSteps] = useState<number>(20);
+	const [width, setWidth] = useState<number>(512);
+	const [height, setHeight] = useState<number>(512);
+	const [cfgScale, setCfgScale] = useState<number>(7);
+	const [isRandomSeed, setIsRandomSeed] = useState(true);
+	const [concreteSeeds, setConcreteSeeds] = useState<string>("");
+	const [batchCount, setBatchCount] = useState<number>(10);
+	const [isValidConcreteSeedsFormat, setIsValidConcreteSeedsFormat] =
+		useState<boolean>(true);
+	const [isGenerating, setIsGenerating] = useState(false);
+	const [isSwitchingCkpt, setIsSwitchingCkpt] = useState(false);
 
-export default function TextGenImage() {
-	const [text, setText] = useState<string>("");
-	const [image, setImage] = useState<string | null>(null);
-	const [progress, setProgress] = useState<number>(0);
-	const [polling, setPolling] = useState<boolean>(false);
+	const handleChange = (
+		e: React.ChangeEvent<
+			HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+		>
+	) => {
+		const { name, value } = e.target;
 
-	useEffect(() => {
-		const pollProgress = async () => {
-			if (polling) {
-				try {
-					const response = await axios.get<ProgressResponse>(
-						"http://127.0.0.1:7860/sdapi/v1/progress"
-					);
-					setProgress(response.data.progress);
-				} catch (error) {
-					console.error("Error polling progress:", error);
+		switch (name) {
+			case "ckpt":
+				async function changeCkptTitle() {
+					const r = await changeCkpt(value);
+					setCkpt(value);
+					setIsSwitchingCkpt(false);
 				}
-			}
-		};
-
-		const interval = setInterval(() => {
-			pollProgress();
-		}, 500); // Poll every 1 second (1000 ms)
-
-		return () => {
-			clearInterval(interval);
-		};
-	}, [polling]);
-
-	const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		setText(e.target.value);
-	};
-
-	const saveImage = async (base64Image: string, info: string) => {
-		const img = new Image();
-		img.src = base64Image;
-		img.onload = () => {
-			const canvas = document.createElement("canvas");
-			canvas.width = img.width;
-			canvas.height = img.height;
-			const ctx = canvas.getContext("2d");
-			if (ctx) {
-				ctx.drawImage(img, 0, 0);
-				canvas.toBlob((blob) => {
-					if (blob) {
-						saveAs(blob, "output.png");
-					}
-				}, "image/png");
-			}
-		};
-	};
-
-	const handleSubmit = async () => {
-		try {
-			setPolling(true); // Start polling
-			const response = await axios.post<ApiResponse>(
-				"http://127.0.0.1:7860/sdapi/v1/txt2img",
-				{
-					prompt: text,
-					steps: 20,
-				}
-			);
-			const base64Image = response.data.images[0];
-			setImage(base64Image);
-
-			const pngPayload = {
-				image: `data:image/png;base64,${base64Image}`,
-			};
-			const response2 = await axios.post<{ info: string }>(
-				"http://127.0.0.1:7860/sdapi/v1/png-info",
-				pngPayload
-			);
-
-			saveImage(base64Image, response2.data.info);
-			setPolling(false); // Start polling
-			// Set progress to 100% when the image is generated
-			setProgress(1);
-		} catch (error) {
-			console.error("Error generating image:", error);
-			setPolling(false);
-			// Set progress to 0% when the image encounter an error
-			setProgress(0);
+				setIsSwitchingCkpt(true);
+				changeCkptTitle();
+				break;
+			case "prompt":
+				setPrompt(value);
+				break;
+			case "negativePrompt":
+				setNPrompt(value);
+				break;
+			case "width":
+				setWidth(parseInt(value));
+				break;
+			case "height":
+				setHeight(parseInt(value));
+				break;
+			case "steps":
+				setSteps(parseInt(value));
+				break;
+			case "method":
+				setMethod(value);
+				break;
+			case "cfgScale":
+				setCfgScale(parseInt(value));
+				break;
+			case "randomSeed":
+				const t = e.target as HTMLInputElement;
+				setIsRandomSeed(Boolean(t.checked));
+				break;
+			case "concreteSeeds":
+				setConcreteSeeds(value);
+				break;
+			case "batchCount":
+				setBatchCount(parseInt(value));
+				break;
+			default:
+				break;
 		}
 	};
 
+	let seedLowerbound: number;
+	let seedUpperbound: number;
+
+	const handleSubmit = (e: React.FormEvent) => {
+		// Get args and join each key-value with comma as a string.
+		const args: Payload = {
+			ckpt: ckpt,
+			prompt: prompt,
+			negativePrompt: nPrompt,
+			samplingMethod: method,
+			samplingSteps: steps,
+			width: width,
+			height: height,
+			cfgScale: cfgScale,
+			concreteSeeds: concreteSeeds,
+			isRandomSeed: isRandomSeed,
+			batchCount: batchCount,
+		};
+
+		const argsKeyValueString = Object.entries(args)
+			.filter(([key, value]) => key !== "concreteSeeds" || value !== "")
+			.map(([key, value]) => `${keyMapping[key as keyof Payload]}: ${value}`)
+			.join(", ");
+
+		// Recreate a new product instance of Product interface
+		prod = {
+			images: [],
+			config: argsKeyValueString,
+			triggerTime: getFormattedDate(),
+			isRandomSeed: isRandomSeed,
+		};
+		imgs = [];
+
+		if (isRandomSeed === false && concreteSeeds !== "") {
+			// validate concrete seed value
+			const pattern = /(?<=\d)-(?=\d)/;
+			const isValid = pattern.test(concreteSeeds);
+			setIsValidConcreteSeedsFormat(isValid);
+
+			if (isValid === false) {
+				e.preventDefault();
+				return;
+			}
+
+			seedLowerbound = parseInt(concreteSeeds.split("-")[0]);
+			seedUpperbound = parseInt(concreteSeeds.split("-")[1]);
+
+			if (seedUpperbound < seedLowerbound) {
+				setIsValidConcreteSeedsFormat(isValid);
+				e.preventDefault();
+				return;
+			}
+
+			for (let i = seedLowerbound; i <= seedUpperbound; i++) {
+				gen(i);
+			}
+		} else {
+			for (let i = 0; i < batchCount; i++) {
+				gen();
+			}
+		}
+
+		setIsGenerating(true); // set isGenerating to true before generating images
+		e.preventDefault();
+	};
+
+	const host = "http://127.0.0.1:7860";
+
+	const gen = async (seed?: number) => {
+		try {
+			let json = {
+				prompt: prompt,
+				negative_prompt: nPrompt,
+				width: width,
+				height: height,
+				steps: steps,
+				cfg_scale: cfgScale,
+				sampler_name: method,
+				seed: -1,
+			};
+			if (seed !== undefined) {
+				json["seed"] = seed;
+			}
+
+			const genResp = await axios.post<{ images: string[] }>(
+				host + "/sdapi/v1/txt2img",
+				json
+			);
+			getPNGInfo(genResp.data.images[0]);
+		} catch (error) {
+			console.log(error);
+		}
+	};
+
+	const getPNGInfo = async (base64Image: string) => {
+		try {
+			const payload = {
+				image: `data:image/png;base64,${base64Image}`,
+			};
+			const pngInfoResp = await axios.post<{ info: string }>(
+				host + "/sdapi/v1/png-info",
+				payload
+			);
+			const seed = getSeed(pngInfoResp.data.info);
+			console.log("image generated: " + seed);
+			appendImage({ image: base64Image, seed: seed });
+			submitProduct();
+		} catch (error) {
+			console.log(error);
+		}
+	};
+
+	function getSeed(raw: string) {
+		const infos = raw.split(",");
+		const seed = infos
+			.filter((partial) => partial.trim().startsWith("Seed:"))[0]
+			.trim()
+			.replace("Seed: ", "");
+		return seed;
+	}
+
+	let prod: Product;
+	let imgs: ImageItem[];
+
+	const appendImage = (imageItem: ImageItem) => {
+		console.log("before imgs: " + imgs.length);
+		const items = [...imgs, imageItem];
+		imgs = items;
+		// update product images
+		prod.images = imgs;
+		console.log(
+			"image count: " +
+				prod.images.length +
+				" config: " +
+				prod.config +
+				" time: " +
+				prod.triggerTime +
+				" isRand: " +
+				prod.isRandomSeed
+		);
+	};
+
+	const submitProduct = () => {
+		if (isRandomSeed === false && concreteSeeds !== "") {
+			// Use concrete seeds
+			if (prod.images.length === seedUpperbound - seedLowerbound + 1) {
+				// post prod
+				console.log("all done.");
+				props.onGeneratedProduct(prod);
+				setIsGenerating(false); // set isGenerating to false after all images are generated
+			}
+		} else {
+			// Use random seeds
+			if (prod.images.length === batchCount) {
+				// post prod
+				console.log("all done.");
+				props.onGeneratedProduct(prod);
+				setIsGenerating(false); // set isGenerating to false after all images are generated
+			}
+		}
+	};
+
+	/**
+	 * load Options and Checkpoints
+	 */
+
+	useEffect(() => {
+		async function loadCurrentCheckpoint() {
+			const options = await loadOptions();
+			if (options?.sdModelCheckpoint === undefined) {
+				setCkpt("");
+			} else {
+				setCkpt(options.sdModelCheckpoint);
+			}
+		}
+		loadCurrentCheckpoint();
+
+		async function loadAllCkpts() {
+			const ckpts = await loadCkpts();
+			if (ckpts === undefined) {
+				setCkpts([]);
+			} else {
+				setCkpts(ckpts.map((i) => i.title));
+			}
+		}
+		loadAllCkpts();
+	}, []);
+
 	return (
-		<div className="flex flex-col items-center justify-center">
-			<div className="w-full max-w-md">
-				<label
-					htmlFor="prompt"
-					className="block text-gray-700 text-sm font-bold mb-2"
-				>
-					Enter your text:
-				</label>
-				<input
-					type="text"
-					id="prompt"
-					value={text}
-					onChange={handleChange}
-					className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
-				/>
-				{/* Progress bar */}
-				<div className="relative pt-1 mb-4">
-					<div className="overflow-hidden h-4 text-xs flex rounded bg-blue-200">
-						<div
-							style={{ width: `${progress * 100}%` }}
-							className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500"
-						>
-							{progress * 100}%
-						</div>
-					</div>
-				</div>
-			</div>
-			<button
-				onClick={handleSubmit}
-				className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded mt-4"
-			>
-				Generate Image
-			</button>
-			{image && (
-				<div className="mt-4">
-					<img
-						src={`data:image/png;base64,${image}`}
-						alt="Generated"
-						className="max-w-md mx-auto"
-					/>
-				</div>
-			)}
-		</div>
+		<>
+			<ImageForm
+				ckpt={ckpt}
+				prompt={prompt}
+				negativePrompt={nPrompt}
+				width={width}
+				height={height}
+				samplingSteps={steps}
+				samplingMethod={method}
+				cfgScale={cfgScale}
+				isRandomSeed={isRandomSeed}
+				concreteSeeds={concreteSeeds}
+				batchCount={batchCount}
+				ckpts={ckpts}
+				isValidConcreteSeedsFormat={isValidConcreteSeedsFormat}
+				isGenerating={isGenerating}
+				isSwitchingCkpt={isSwitchingCkpt}
+				onChange={handleChange}
+				handleSubmit={handleSubmit}
+			/>
+		</>
 	);
 }
